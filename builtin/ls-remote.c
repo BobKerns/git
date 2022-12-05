@@ -7,7 +7,7 @@
 
 static const char * const ls_remote_usage[] = {
 	N_("git ls-remote [--heads] [--tags] [--refs] [--upload-pack=<exec>]\n"
-	   "              [-q | --quiet] [--exit-code] [--get-url]\n"
+	   "              [-q | --quiet] [--exit-code] [--get-url] [--sort=<key>]\n"
 	   "              [--symref] [<repository> [<refs>...]]"),
 	NULL
 };
@@ -114,7 +114,7 @@ int cmd_ls_remote(int argc, const char **argv, const char *prefix)
 	}
 
 	transport = transport_get(remote, NULL);
-	if (uploadpack != NULL)
+	if (uploadpack)
 		transport_set_option(transport, TRANS_OPT_UPLOADPACK, uploadpack);
 	if (server_options.nr)
 		transport->server_options = &server_options;

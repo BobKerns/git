@@ -266,6 +266,16 @@ test_expect_success '"git bisect run" simple case' '
 	git bisect reset
 '
 
+# We want to make sure no arguments has been eaten
+test_expect_success '"git bisect run" simple case' '
+	git bisect start &&
+	git bisect good $HASH1 &&
+	git bisect bad $HASH4 &&
+	git bisect run printf "%s %s\n" reset --bisect-skip >my_bisect_log.txt &&
+	grep -e "reset --bisect-skip" my_bisect_log.txt &&
+	git bisect reset
+'
+
 # We want to automatically find the commit that
 # added "Ciao" into hello.
 test_expect_success '"git bisect run" with more complex "git bisect start"' '
@@ -1023,6 +1033,34 @@ test_expect_success 'bisect visualize with a filename with dash and space' '
 	git add -- "./-hello 2" &&
 	git commit --quiet -m "Add test line" -- "./-hello 2" &&
 	git bisect visualize -p -- "-hello 2"
+'
+
+test_expect_success 'bisect state output with multiple good commits' '
+	git bisect reset &&
+	git bisect start >output &&
+	grep "waiting for both good and bad commits" output &&
+	git bisect log >output &&
+	grep "waiting for both good and bad commits" output &&
+	git bisect good "$HASH1" >output &&
+	grep "waiting for bad commit, 1 good commit known" output &&
+	git bisect log >output &&
+	grep "waiting for bad commit, 1 good commit known" output &&
+	git bisect good "$HASH2" >output &&
+	grep "waiting for bad commit, 2 good commits known" output &&
+	git bisect log >output &&
+	grep "waiting for bad commit, 2 good commits known" output
+'
+
+test_expect_success 'bisect state output with bad commit' '
+	git bisect reset &&
+	git bisect start >output &&
+	grep "waiting for both good and bad commits" output &&
+	git bisect log >output &&
+	grep "waiting for both good and bad commits" output &&
+	git bisect bad "$HASH4" >output &&
+	grep -F "waiting for good commit(s), bad commit known" output &&
+	git bisect log >output &&
+	grep -F "waiting for good commit(s), bad commit known" output
 '
 
 test_done

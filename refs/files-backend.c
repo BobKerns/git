@@ -138,44 +138,30 @@ static struct files_ref_store *files_downcast(struct ref_store *ref_store,
 	return refs;
 }
 
-static void files_reflog_path_other_worktrees(struct files_ref_store *refs,
-					      struct strbuf *sb,
-					      const char *refname)
-{
-	const char *real_ref;
-	const char *worktree_name;
-	int length;
-
-	if (parse_worktree_ref(refname, &worktree_name, &length, &real_ref))
-		BUG("refname %s is not a other-worktree ref", refname);
-
-	if (worktree_name)
-		strbuf_addf(sb, "%s/worktrees/%.*s/logs/%s", refs->gitcommondir,
-			    length, worktree_name, real_ref);
-	else
-		strbuf_addf(sb, "%s/logs/%s", refs->gitcommondir,
-			    real_ref);
-}
-
 static void files_reflog_path(struct files_ref_store *refs,
 			      struct strbuf *sb,
 			      const char *refname)
 {
-	switch (ref_type(refname)) {
-	case REF_TYPE_PER_WORKTREE:
-	case REF_TYPE_PSEUDOREF:
+	const char *bare_refname;
+	const char *wtname;
+	int wtname_len;
+	enum ref_worktree_type wt_type = parse_worktree_ref(
+		refname, &wtname, &wtname_len, &bare_refname);
+
+	switch (wt_type) {
+	case REF_WORKTREE_CURRENT:
 		strbuf_addf(sb, "%s/logs/%s", refs->base.gitdir, refname);
 		break;
-	case REF_TYPE_OTHER_PSEUDOREF:
-	case REF_TYPE_MAIN_PSEUDOREF:
-		files_reflog_path_other_worktrees(refs, sb, refname);
+	case REF_WORKTREE_SHARED:
+	case REF_WORKTREE_MAIN:
+		strbuf_addf(sb, "%s/logs/%s", refs->gitcommondir, bare_refname);
 		break;
-	case REF_TYPE_NORMAL:
-		strbuf_addf(sb, "%s/logs/%s", refs->gitcommondir, refname);
+	case REF_WORKTREE_OTHER:
+		strbuf_addf(sb, "%s/worktrees/%.*s/logs/%s", refs->gitcommondir,
+			    wtname_len, wtname, bare_refname);
 		break;
 	default:
-		BUG("unknown ref type %d of ref %s",
-		    ref_type(refname), refname);
+		BUG("unknown ref type %d of ref %s", wt_type, refname);
 	}
 }
 
@@ -183,22 +169,25 @@ static void files_ref_path(struct files_ref_store *refs,
 			   struct strbuf *sb,
 			   const char *refname)
 {
-	switch (ref_type(refname)) {
-	case REF_TYPE_PER_WORKTREE:
-	case REF_TYPE_PSEUDOREF:
+	const char *bare_refname;
+	const char *wtname;
+	int wtname_len;
+	enum ref_worktree_type wt_type = parse_worktree_ref(
+		refname, &wtname, &wtname_len, &bare_refname);
+	switch (wt_type) {
+	case REF_WORKTREE_CURRENT:
 		strbuf_addf(sb, "%s/%s", refs->base.gitdir, refname);
 		break;
-	case REF_TYPE_MAIN_PSEUDOREF:
-		if (!skip_prefix(refname, "main-worktree/", &refname))
-			BUG("ref %s is not a main pseudoref", refname);
-		/* fallthrough */
-	case REF_TYPE_OTHER_PSEUDOREF:
-	case REF_TYPE_NORMAL:
-		strbuf_addf(sb, "%s/%s", refs->gitcommondir, refname);
+	case REF_WORKTREE_OTHER:
+		strbuf_addf(sb, "%s/worktrees/%.*s/%s", refs->gitcommondir,
+			    wtname_len, wtname, bare_refname);
+		break;
+	case REF_WORKTREE_SHARED:
+	case REF_WORKTREE_MAIN:
+		strbuf_addf(sb, "%s/%s", refs->gitcommondir, bare_refname);
 		break;
 	default:
-		BUG("unknown ref type %d of ref %s",
-		    ref_type(refname), refname);
+		BUG("unknown ref type %d of ref %s", wt_type, refname);
 	}
 }
 
@@ -771,7 +760,8 @@ static int files_ref_iterator_advance(struct ref_iterator *ref_iterator)
 
 	while ((ok = ref_iterator_advance(iter->iter0)) == ITER_OK) {
 		if (iter->flags & DO_FOR_EACH_PER_WORKTREE_ONLY &&
-		    ref_type(iter->iter0->refname) != REF_TYPE_PER_WORKTREE)
+		    parse_worktree_ref(iter->iter0->refname, NULL, NULL,
+				       NULL) != REF_WORKTREE_CURRENT)
 			continue;
 
 		if ((iter->flags & DO_FOR_EACH_OMIT_DANGLING_SYMREFS) &&
@@ -1136,8 +1126,7 @@ static void prune_ref(struct files_ref_store *refs, struct ref_to_prune *r)
 	if (check_refname_format(r->name, 0))
 		return;
 
-	transaction = ref_store_transaction_begin(&refs->base,
-						  REF_TRANSACTION_SKIP_HOOK, &err);
+	transaction = ref_store_transaction_begin(&refs->base, &err);
 	if (!transaction)
 		goto cleanup;
 	ref_transaction_add_update(
@@ -1179,7 +1168,8 @@ static int should_pack_ref(const char *refname,
 			   unsigned int pack_flags)
 {
 	/* Do not pack per-worktree refs: */
-	if (ref_type(refname) != REF_TYPE_NORMAL)
+	if (parse_worktree_ref(refname, NULL, NULL, NULL) !=
+	    REF_WORKTREE_SHARED)
 		return 0;
 
 	/* Do not pack non-tags unless PACK_REFS_ALL is set: */
@@ -1208,8 +1198,7 @@ static int files_pack_refs(struct ref_store *ref_store, unsigned int flags)
 	struct strbuf err = STRBUF_INIT;
 	struct ref_transaction *transaction;
 
-	transaction = ref_store_transaction_begin(refs->packed_ref_store,
-						  REF_TRANSACTION_SKIP_HOOK, &err);
+	transaction = ref_store_transaction_begin(refs->packed_ref_store, &err);
 	if (!transaction)
 		return -1;
 
@@ -1266,7 +1255,6 @@ static int files_delete_refs(struct ref_store *ref_store, const char *msg,
 {
 	struct files_ref_store *refs =
 		files_downcast(ref_store, REF_STORE_WRITE, "delete_refs");
-	struct ref_transaction *transaction = NULL;
 	struct strbuf err = STRBUF_INIT;
 	int i, result = 0;
 
@@ -1276,15 +1264,10 @@ static int files_delete_refs(struct ref_store *ref_store, const char *msg,
 	if (packed_refs_lock(refs->packed_ref_store, 0, &err))
 		goto error;
 
-	transaction = ref_store_transaction_begin(refs->packed_ref_store,
-						  REF_TRANSACTION_SKIP_HOOK, &err);
-	if (!transaction)
+	if (refs_delete_refs(refs->packed_ref_store, msg, refnames, flags)) {
+		packed_refs_unlock(refs->packed_ref_store);
 		goto error;
-
-	result = packed_refs_delete_refs(refs->packed_ref_store,
-					 transaction, msg, refnames, flags);
-	if (result)
-		goto error;
+	}
 
 	packed_refs_unlock(refs->packed_ref_store);
 
@@ -1295,7 +1278,6 @@ static int files_delete_refs(struct ref_store *ref_store, const char *msg,
 			result |= error(_("could not remove reference %s"), refname);
 	}
 
-	ref_transaction_free(transaction);
 	strbuf_release(&err);
 	return result;
 
@@ -1312,7 +1294,6 @@ error:
 	else
 		error(_("could not delete references: %s"), err.buf);
 
-	ref_transaction_free(transaction);
 	strbuf_release(&err);
 	return -1;
 }
@@ -2212,8 +2193,8 @@ static int files_reflog_iterator_advance(struct ref_iterator *ref_iterator)
 	return ok;
 }
 
-static int files_reflog_iterator_peel(struct ref_iterator *ref_iterator,
-				      struct object_id *peeled)
+static int files_reflog_iterator_peel(struct ref_iterator *ref_iterator UNUSED,
+				      struct object_id *peeled UNUSED)
 {
 	BUG("ref_iterator_peel() called for reflog_iterator");
 }
@@ -2267,7 +2248,7 @@ static struct ref_iterator *reflog_iterator_begin(struct ref_store *ref_store,
 static enum iterator_selection reflog_iterator_select(
 	struct ref_iterator *iter_worktree,
 	struct ref_iterator *iter_common,
-	void *cb_data)
+	void *cb_data UNUSED)
 {
 	if (iter_worktree) {
 		/*
@@ -2277,7 +2258,8 @@ static enum iterator_selection reflog_iterator_select(
 		 */
 		return ITER_SELECT_0;
 	} else if (iter_common) {
-		if (ref_type(iter_common->refname) == REF_TYPE_NORMAL)
+		if (parse_worktree_ref(iter_common->refname, NULL, NULL,
+				       NULL) == REF_WORKTREE_SHARED)
 			return ITER_SELECT_1;
 
 		/*
@@ -2784,8 +2766,7 @@ static int files_transaction_prepare(struct ref_store *ref_store,
 			 */
 			if (!packed_transaction) {
 				packed_transaction = ref_store_transaction_begin(
-						refs->packed_ref_store,
-						REF_TRANSACTION_SKIP_HOOK, err);
+						refs->packed_ref_store, err);
 				if (!packed_transaction) {
 					ret = TRANSACTION_GENERIC_ERROR;
 					goto cleanup;
@@ -2996,7 +2977,7 @@ cleanup:
 
 static int files_transaction_abort(struct ref_store *ref_store,
 				   struct ref_transaction *transaction,
-				   struct strbuf *err)
+				   struct strbuf *err UNUSED)
 {
 	struct files_ref_store *refs =
 		files_downcast(ref_store, 0, "ref_transaction_abort");
@@ -3006,7 +2987,9 @@ static int files_transaction_abort(struct ref_store *ref_store,
 }
 
 static int ref_present(const char *refname,
-		       const struct object_id *oid, int flags, void *cb_data)
+		       const struct object_id *oid UNUSED,
+		       int flags UNUSED,
+		       void *cb_data)
 {
 	struct string_list *affected_refnames = cb_data;
 
@@ -3056,8 +3039,7 @@ static int files_initial_transaction_commit(struct ref_store *ref_store,
 				 &affected_refnames))
 		BUG("initial ref transaction called with existing refs");
 
-	packed_transaction = ref_store_transaction_begin(refs->packed_ref_store,
-							 REF_TRANSACTION_SKIP_HOOK, err);
+	packed_transaction = ref_store_transaction_begin(refs->packed_ref_store, err);
 	if (!packed_transaction) {
 		ret = TRANSACTION_GENERIC_ERROR;
 		goto cleanup;
@@ -3271,7 +3253,7 @@ static int files_reflog_expire(struct ref_store *ref_store,
 	return -1;
 }
 
-static int files_init_db(struct ref_store *ref_store, struct strbuf *err)
+static int files_init_db(struct ref_store *ref_store, struct strbuf *err UNUSED)
 {
 	struct files_ref_store *refs =
 		files_downcast(ref_store, REF_STORE_WRITE, "init_db");

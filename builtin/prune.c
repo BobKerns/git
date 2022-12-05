@@ -127,7 +127,9 @@ static void remove_temporary_files(const char *path)
 
 	dir = opendir(path);
 	if (!dir) {
-		fprintf(stderr, "Unable to open directory %s\n", path);
+		if (errno != ENOENT)
+			fprintf(stderr, "Unable to open directory %s: %s\n",
+				path, strerror(errno));
 		return;
 	}
 	while ((de = readdir(dir)) != NULL)
@@ -196,5 +198,6 @@ int cmd_prune(int argc, const char **argv, const char *prefix)
 		prune_shallow(show_only ? PRUNE_SHOW_ONLY : 0);
 	}
 
+	release_revisions(&revs);
 	return 0;
 }

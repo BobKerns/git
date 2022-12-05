@@ -3,7 +3,7 @@
  *
  * Copyright (C) 2006 Linus Torvalds
  */
-#define USE_THE_INDEX_COMPATIBILITY_MACROS
+#define USE_THE_INDEX_VARIABLE
 #include "cache.h"
 #include "config.h"
 #include "builtin.h"
@@ -42,8 +42,8 @@ static int chmod_pathspec(struct pathspec *pathspec, char flip, int show_only)
 {
 	int i, ret = 0;
 
-	for (i = 0; i < active_nr; i++) {
-		struct cache_entry *ce = active_cache[i];
+	for (i = 0; i < the_index.cache_nr; i++) {
+		struct cache_entry *ce = the_index.cache[i];
 		int err;
 
 		if (!include_sparse &&
@@ -55,7 +55,7 @@ static int chmod_pathspec(struct pathspec *pathspec, char flip, int show_only)
 			continue;
 
 		if (!show_only)
-			err = chmod_cache_entry(ce, flip);
+			err = chmod_index_entry(&the_index, ce, flip);
 		else
 			err = S_ISREG(ce->ce_mode) ? 0 : -1;
 
@@ -141,8 +141,17 @@ int add_files_to_cache(const char *prefix,
 	rev.diffopt.format_callback_data = &data;
 	rev.diffopt.flags.override_submodule_config = 1;
 	rev.max_count = 0; /* do not compare unmerged paths with stage #2 */
+
+	/*
+	 * Use an ODB transaction to optimize adding multiple objects.
+	 * This function is invoked from commands other than 'add', which
+	 * may not have their own transaction active.
+	 */
+	begin_odb_transaction();
 	run_diff_files(&rev, DIFF_RACY_IS_MODIFIED);
-	clear_pathspec(&rev.prune_data);
+	end_odb_transaction();
+
+	release_revisions(&rev);
 	return !!data.add_errors;
 }
 
@@ -150,8 +159,8 @@ static int renormalize_tracked_files(const struct pathspec *pathspec, int flags)
 {
 	int i, retval = 0;
 
-	for (i = 0; i < active_nr; i++) {
-		struct cache_entry *ce = active_cache[i];
+	for (i = 0; i < the_index.cache_nr; i++) {
+		struct cache_entry *ce = the_index.cache[i];
 
 		if (!include_sparse &&
 		    (ce_skip_worktree(ce) ||
@@ -163,7 +172,8 @@ static int renormalize_tracked_files(const struct pathspec *pathspec, int flags)
 			continue; /* do not touch non blobs */
 		if (pathspec && !ce_path_match(&the_index, ce, pathspec, NULL))
 			continue;
-		retval |= add_file_to_cache(ce->name, flags | ADD_CACHE_RENORMALIZE);
+		retval |= add_file_to_index(&the_index, ce->name,
+					    flags | ADD_CACHE_RENORMALIZE);
 	}
 
 	return retval;
@@ -231,22 +241,17 @@ static int refresh(int verbose, const struct pathspec *pathspec)
 int run_add_interactive(const char *revision, const char *patch_mode,
 			const struct pathspec *pathspec)
 {
-	int status, i;
-	struct strvec argv = STRVEC_INIT;
+	int i;
+	struct child_process cmd = CHILD_PROCESS_INIT;
 	int use_builtin_add_i =
 		git_env_bool("GIT_TEST_ADD_I_USE_BUILTIN", -1);
 
-	if (use_builtin_add_i < 0) {
-		int experimental;
-		if (!git_config_get_bool("add.interactive.usebuiltin",
-					 &use_builtin_add_i))
-			; /* ok */
-		else if (!git_config_get_bool("feature.experimental", &experimental) &&
-			 experimental)
-			use_builtin_add_i = 1;
-	}
+	if (use_builtin_add_i < 0 &&
+	    git_config_get_bool("add.interactive.usebuiltin",
+				&use_builtin_add_i))
+		use_builtin_add_i = 1;
 
-	if (use_builtin_add_i == 1) {
+	if (use_builtin_add_i != 0) {
 		enum add_p_mode mode;
 
 		if (!patch_mode)
@@ -268,19 +273,18 @@ int run_add_interactive(const char *revision, const char *patch_mode,
 		return !!run_add_p(the_repository, mode, revision, pathspec);
 	}
 
-	strvec_push(&argv, "add--interactive");
+	strvec_push(&cmd.args, "add--interactive");
 	if (patch_mode)
-		strvec_push(&argv, patch_mode);
+		strvec_push(&cmd.args, patch_mode);
 	if (revision)
-		strvec_push(&argv, revision);
-	strvec_push(&argv, "--");
+		strvec_push(&cmd.args, revision);
+	strvec_push(&cmd.args, "--");
 	for (i = 0; i < pathspec->nr; i++)
 		/* pass original pathspec, to be re-parsed */
-		strvec_push(&argv, pathspec->items[i].original);
+		strvec_push(&cmd.args, pathspec->items[i].original);
 
-	status = run_command_v_opt(argv.v, RUN_GIT_CMD);
-	strvec_clear(&argv);
-	return status;
+	cmd.git_cmd = 1;
+	return run_command(&cmd);
 }
 
 int interactive_add(const char **argv, const char *prefix, int patch)
@@ -308,7 +312,7 @@ static int edit_patch(int argc, const char **argv, const char *prefix)
 
 	git_config(git_diff_basic_config, NULL); /* no "diff" UI options */
 
-	if (read_cache() < 0)
+	if (repo_read_index(the_repository) < 0)
 		die(_("Could not read the index"));
 
 	repo_init_revisions(the_repository, &rev, prefix);
@@ -340,6 +344,7 @@ static int edit_patch(int argc, const char **argv, const char *prefix)
 
 	unlink(file);
 	free(file);
+	release_revisions(&rev);
 	return 0;
 }
 
@@ -539,7 +544,7 @@ int cmd_add(int argc, const char **argv, const char *prefix)
 	prepare_repo_settings(the_repository);
 	the_repository->settings.command_requires_full_index = 0;
 
-	hold_locked_index(&lock_file, LOCK_DIE_ON_ERROR);
+	repo_hold_locked_index(the_repository, &lock_file, LOCK_DIE_ON_ERROR);
 
 	/*
 	 * Check the "pathspec '%s' did not match any files" block
@@ -582,7 +587,7 @@ int cmd_add(int argc, const char **argv, const char *prefix)
 		 (!(addremove || take_worktree_changes)
 		  ? ADD_CACHE_IGNORE_REMOVAL : 0));
 
-	if (read_cache_preload(&pathspec) < 0)
+	if (repo_read_index_preload(the_repository, &pathspec, 0) < 0)
 		die(_("index file corrupt"));
 
 	die_in_unpopulated_submodule(&the_index, prefix);
@@ -670,7 +675,7 @@ int cmd_add(int argc, const char **argv, const char *prefix)
 		string_list_clear(&only_match_skip_worktree, 0);
 	}
 
-	plug_bulk_checkin();
+	begin_odb_transaction();
 
 	if (add_renormalize)
 		exit_status |= renormalize_tracked_files(&pathspec, flags);
@@ -682,7 +687,7 @@ int cmd_add(int argc, const char **argv, const char *prefix)
 
 	if (chmod_arg && pathspec.nr)
 		exit_status |= chmod_pathspec(&pathspec, chmod_arg[0], show_only);
-	unplug_bulk_checkin();
+	end_odb_transaction();
 
 finish:
 	if (write_locked_index(&the_index, &lock_file,

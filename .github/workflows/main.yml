@@ -37,14 +37,14 @@ jobs:
           echo "::set-output name=enabled::$enabled"
       - name: skip if the commit or tree was already tested
         id: skip-if-redundant
-        uses: actions/github-script@v3
+        uses: actions/github-script@v6
         if: steps.check-ref.outputs.enabled == 'yes'
         with:
           github-token: ${{secrets.GITHUB_TOKEN}}
           script: |
             try {
               // Figure out workflow ID, commit and tree
-              const { data: run } = await github.actions.getWorkflowRun({
+              const { data: run } = await github.rest.actions.getWorkflowRun({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 run_id: context.runId,
@@ -54,7 +54,7 @@ jobs:
               const tree_id = run.head_commit.tree_id;
 
               // See whether there is a successful run for that commit or tree
-              const { data: runs } = await github.actions.listWorkflowRuns({
+              const { data: runs } = await github.rest.actions.listWorkflowRuns({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 per_page: 500,
@@ -119,8 +119,8 @@ jobs:
     - name: test
       shell: bash
       run: . /etc/profile && ci/run-test-slice.sh ${{matrix.nr}} 10
-    - name: ci/print-test-failures.sh
-      if: failure()
+    - name: print test failures
+      if: failure() && env.FAILED_TEST_ARTIFACTS != ''
       shell: bash
       run: ci/print-test-failures.sh
     - name: Upload failed tests' directories
@@ -204,8 +204,8 @@ jobs:
       env:
         NO_SVN_TESTS: 1
       run: . /etc/profile && ci/run-test-slice.sh ${{matrix.nr}} 10
-    - name: ci/print-test-failures.sh
-      if: failure()
+    - name: print test failures
+      if: failure() && env.FAILED_TEST_ARTIFACTS != ''
       shell: bash
       run: ci/print-test-failures.sh
     - name: Upload failed tests' directories
@@ -227,17 +227,15 @@ jobs:
             pool: ubuntu-latest
           - jobname: linux-sha256
             cc: clang
-            os: ubuntu
             pool: ubuntu-latest
           - jobname: linux-gcc
             cc: gcc
             cc_package: gcc-8
-            pool: ubuntu-latest
+            pool: ubuntu-20.04
           - jobname: linux-TEST-vars
             cc: gcc
-            os: ubuntu
             cc_package: gcc-8
-            pool: ubuntu-latest
+            pool: ubuntu-20.04
           - jobname: osx-clang
             cc: clang
             pool: macos-latest
@@ -251,6 +249,12 @@ jobs:
           - jobname: linux-leaks
             cc: gcc
             pool: ubuntu-latest
+          - jobname: linux-asan
+            cc: gcc
+            pool: ubuntu-latest
+          - jobname: linux-ubsan
+            cc: gcc
+            pool: ubuntu-latest
     env:
       CC: ${{matrix.vector.cc}}
       CC_PACKAGE: ${{matrix.vector.cc_package}}
@@ -261,8 +265,10 @@ jobs:
     - uses: actions/checkout@v2
     - run: ci/install-dependencies.sh
     - run: ci/run-build-and-tests.sh
-    - run: ci/print-test-failures.sh
-      if: failure()
+    - name: print test failures
+      if: failure() && env.FAILED_TEST_ARTIFACTS != ''
+      shell: bash
+      run: ci/print-test-failures.sh
     - name: Upload failed tests' directories
       if: failure() && env.FAILED_TEST_ARTIFACTS != ''
       uses: actions/upload-artifact@v2
@@ -280,7 +286,6 @@ jobs:
         - jobname: linux-musl
           image: alpine
         - jobname: linux32
-          os: ubuntu32
           image: daald/ubuntu32:xenial
         - jobname: pedantic
           image: fedora
@@ -292,8 +297,10 @@ jobs:
     - uses: actions/checkout@v1
     - run: ci/install-docker-dependencies.sh
     - run: ci/run-build-and-tests.sh
-    - run: ci/print-test-failures.sh
-      if: failure()
+    - name: print test failures
+      if: failure() && env.FAILED_TEST_ARTIFACTS != ''
+      shell: bash
+      run: ci/print-test-failures.sh
     - name: Upload failed tests' directories
       if: failure() && env.FAILED_TEST_ARTIFACTS != ''
       uses: actions/upload-artifact@v1
@@ -305,7 +312,7 @@ jobs:
     if: needs.ci-config.outputs.enabled == 'yes'
     env:
       jobname: StaticAnalysis
-    runs-on: ubuntu-18.04
+    runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v2
     - run: ci/install-dependencies.sh

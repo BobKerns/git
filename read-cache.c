@@ -112,7 +112,7 @@ static const char *alternate_index_output;
 static void set_index_entry(struct index_state *istate, int nr, struct cache_entry *ce)
 {
 	if (S_ISSPARSEDIR(ce->ce_mode))
-		istate->sparse_index = 1;
+		istate->sparse_index = INDEX_COLLAPSED;
 
 	istate->cache[nr] = ce;
 	add_name_hash(istate, ce);
@@ -618,6 +618,11 @@ static int index_name_stage_pos(struct index_state *istate,
 int index_name_pos(struct index_state *istate, const char *name, int namelen)
 {
 	return index_name_stage_pos(istate, name, namelen, 0, EXPAND_SPARSE);
+}
+
+int index_name_pos_sparse(struct index_state *istate, const char *name, int namelen)
+{
+	return index_name_stage_pos(istate, name, namelen, 0, NO_EXPAND_SPARSE);
 }
 
 int index_entry_exists(struct index_state *istate, const char *name, int namelen)
@@ -1856,7 +1861,7 @@ static int read_index_extension(struct index_state *istate,
 		break;
 	case CACHE_EXT_SPARSE_DIRECTORIES:
 		/* no content, only an indicator */
-		istate->sparse_index = 1;
+		istate->sparse_index = INDEX_COLLAPSED;
 		break;
 	default:
 		if (*ext < 'A' || 'Z' < *ext)
@@ -1868,9 +1873,20 @@ static int read_index_extension(struct index_state *istate,
 	return 0;
 }
 
+/*
+ * Parses the contents of the cache entry contained within the 'ondisk' buffer
+ * into a new incore 'cache_entry'.
+ *
+ * Note that 'char *ondisk' may not be aligned to a 4-byte address interval in
+ * index v4, so we cannot cast it to 'struct ondisk_cache_entry *' and access
+ * its members. Instead, we use the byte offsets of members within the struct to
+ * identify where 'get_be16()', 'get_be32()', and 'oidread()' (which can all
+ * read from an unaligned memory buffer) should read from the 'ondisk' buffer
+ * into the corresponding incore 'cache_entry' members.
+ */
 static struct cache_entry *create_from_disk(struct mem_pool *ce_mem_pool,
 					    unsigned int version,
-					    struct ondisk_cache_entry *ondisk,
+					    const char *ondisk,
 					    unsigned long *ent_size,
 					    const struct cache_entry *previous_ce)
 {
@@ -1878,7 +1894,7 @@ static struct cache_entry *create_from_disk(struct mem_pool *ce_mem_pool,
 	size_t len;
 	const char *name;
 	const unsigned hashsz = the_hash_algo->rawsz;
-	const uint16_t *flagsp = (const uint16_t *)(ondisk->data + hashsz);
+	const char *flagsp = ondisk + offsetof(struct ondisk_cache_entry, data) + hashsz;
 	unsigned int flags;
 	size_t copy_len = 0;
 	/*
@@ -1896,15 +1912,15 @@ static struct cache_entry *create_from_disk(struct mem_pool *ce_mem_pool,
 
 	if (flags & CE_EXTENDED) {
 		int extended_flags;
-		extended_flags = get_be16(flagsp + 1) << 16;
+		extended_flags = get_be16(flagsp + sizeof(uint16_t)) << 16;
 		/* We do not yet understand any bit out of CE_EXTENDED_FLAGS */
 		if (extended_flags & ~CE_EXTENDED_FLAGS)
 			die(_("unknown index entry format 0x%08x"), extended_flags);
 		flags |= extended_flags;
-		name = (const char *)(flagsp + 2);
+		name = (const char *)(flagsp + 2 * sizeof(uint16_t));
 	}
 	else
-		name = (const char *)(flagsp + 1);
+		name = (const char *)(flagsp + sizeof(uint16_t));
 
 	if (expand_name_field) {
 		const unsigned char *cp = (const unsigned char *)name;
@@ -1930,22 +1946,32 @@ static struct cache_entry *create_from_disk(struct mem_pool *ce_mem_pool,
 
 	ce = mem_pool__ce_alloc(ce_mem_pool, len);
 
-	ce->ce_stat_data.sd_ctime.sec = get_be32(&ondisk->ctime.sec);
-	ce->ce_stat_data.sd_mtime.sec = get_be32(&ondisk->mtime.sec);
-	ce->ce_stat_data.sd_ctime.nsec = get_be32(&ondisk->ctime.nsec);
-	ce->ce_stat_data.sd_mtime.nsec = get_be32(&ondisk->mtime.nsec);
-	ce->ce_stat_data.sd_dev   = get_be32(&ondisk->dev);
-	ce->ce_stat_data.sd_ino   = get_be32(&ondisk->ino);
-	ce->ce_mode  = get_be32(&ondisk->mode);
-	ce->ce_stat_data.sd_uid   = get_be32(&ondisk->uid);
-	ce->ce_stat_data.sd_gid   = get_be32(&ondisk->gid);
-	ce->ce_stat_data.sd_size  = get_be32(&ondisk->size);
+	/*
+	 * NEEDSWORK: using 'offsetof()' is cumbersome and should be replaced
+	 * with something more akin to 'load_bitmap_entries_v1()'s use of
+	 * 'read_be16'/'read_be32'. For consistency with the corresponding
+	 * ondisk entry write function ('copy_cache_entry_to_ondisk()'), this
+	 * should be done at the same time as removing references to
+	 * 'ondisk_cache_entry' there.
+	 */
+	ce->ce_stat_data.sd_ctime.sec = get_be32(ondisk + offsetof(struct ondisk_cache_entry, ctime)
+							+ offsetof(struct cache_time, sec));
+	ce->ce_stat_data.sd_mtime.sec = get_be32(ondisk + offsetof(struct ondisk_cache_entry, mtime)
+							+ offsetof(struct cache_time, sec));
+	ce->ce_stat_data.sd_ctime.nsec = get_be32(ondisk + offsetof(struct ondisk_cache_entry, ctime)
+							 + offsetof(struct cache_time, nsec));
+	ce->ce_stat_data.sd_mtime.nsec = get_be32(ondisk + offsetof(struct ondisk_cache_entry, mtime)
+							 + offsetof(struct cache_time, nsec));
+	ce->ce_stat_data.sd_dev   = get_be32(ondisk + offsetof(struct ondisk_cache_entry, dev));
+	ce->ce_stat_data.sd_ino   = get_be32(ondisk + offsetof(struct ondisk_cache_entry, ino));
+	ce->ce_mode  = get_be32(ondisk + offsetof(struct ondisk_cache_entry, mode));
+	ce->ce_stat_data.sd_uid   = get_be32(ondisk + offsetof(struct ondisk_cache_entry, uid));
+	ce->ce_stat_data.sd_gid   = get_be32(ondisk + offsetof(struct ondisk_cache_entry, gid));
+	ce->ce_stat_data.sd_size  = get_be32(ondisk + offsetof(struct ondisk_cache_entry, size));
 	ce->ce_flags = flags & ~CE_NAMEMASK;
 	ce->ce_namelen = len;
 	ce->index = 0;
-	oidread(&ce->oid, ondisk->data);
-	memcpy(ce->name, name, len);
-	ce->name[len] = '\0';
+	oidread(&ce->oid, (const unsigned char *)ondisk + offsetof(struct ondisk_cache_entry, data));
 
 	if (expand_name_field) {
 		if (copy_len)
@@ -2114,12 +2140,12 @@ static unsigned long load_cache_entry_block(struct index_state *istate,
 	unsigned long src_offset = start_offset;
 
 	for (i = offset; i < offset + nr; i++) {
-		struct ondisk_cache_entry *disk_ce;
 		struct cache_entry *ce;
 		unsigned long consumed;
 
-		disk_ce = (struct ondisk_cache_entry *)(mmap + src_offset);
-		ce = create_from_disk(ce_mem_pool, istate->version, disk_ce, &consumed, previous_ce);
+		ce = create_from_disk(ce_mem_pool, istate->version,
+				      mmap + src_offset,
+				      &consumed, previous_ce);
 		set_index_entry(istate, i, ce);
 
 		src_offset += consumed;
@@ -2260,6 +2286,20 @@ static unsigned long load_cache_entries_threaded(struct index_state *istate, con
 	return consumed;
 }
 
+static void set_new_index_sparsity(struct index_state *istate)
+{
+	/*
+	 * If the index's repo exists, mark it sparse according to
+	 * repo settings.
+	 */
+	if (istate->repo) {
+		prepare_repo_settings(istate->repo);
+		if (!istate->repo->settings.command_requires_full_index &&
+		    is_sparse_index_allowed(istate, 0))
+			istate->sparse_index = 1;
+	}
+}
+
 /* remember to discard_cache() before reading a different cache! */
 int do_read_index(struct index_state *istate, const char *path, int must_exist)
 {
@@ -2281,8 +2321,12 @@ int do_read_index(struct index_state *istate, const char *path, int must_exist)
 	istate->timestamp.nsec = 0;
 	fd = open(path, O_RDONLY);
 	if (fd < 0) {
-		if (!must_exist && errno == ENOENT)
+		if (!must_exist && errno == ENOENT) {
+			if (!istate->repo)
+				istate->repo = the_repository;
+			set_new_index_sparsity(istate);
 			return 0;
+		}
 		die_errno(_("%s: index file open failed"), path);
 	}
 
@@ -2459,15 +2503,15 @@ int read_index_from(struct index_state *istate, const char *path,
 				   the_repository, "%s", base_path);
 	if (!ret) {
 		char *path_copy = xstrdup(path);
-		const char *base_path2 = xstrfmt("%s/sharedindex.%s",
-						 dirname(path_copy),
-						 base_oid_hex);
+		char *base_path2 = xstrfmt("%s/sharedindex.%s",
+					   dirname(path_copy), base_oid_hex);
 		free(path_copy);
 		trace2_region_enter_printf("index", "shared/do_read_index",
 					   the_repository, "%s", base_path2);
 		ret = do_read_index(split_index->base, base_path2, 1);
 		trace2_region_leave_printf("index", "shared/do_read_index",
 					   the_repository, "%s", base_path2);
+		free(base_path2);
 	}
 	if (!oideq(&split_index->base_oid, &split_index->base->oid))
 		die(_("broken index, expect %s in %s, got %s"),
@@ -2487,7 +2531,7 @@ int is_index_unborn(struct index_state *istate)
 	return (!istate->cache_nr && !istate->timestamp.sec);
 }
 
-int discard_index(struct index_state *istate)
+void discard_index(struct index_state *istate)
 {
 	/*
 	 * Cache entries in istate->cache[] should have been allocated
@@ -2518,8 +2562,6 @@ int discard_index(struct index_state *istate)
 		mem_pool_discard(istate->ce_mem_pool, should_validate_cache_entries());
 		FREE_AND_NULL(istate->ce_mem_pool);
 	}
-
-	return 0;
 }
 
 /*
@@ -3149,7 +3191,7 @@ static int do_write_locked_index(struct index_state *istate, struct lock_file *l
 				 unsigned flags)
 {
 	int ret;
-	int was_full = !istate->sparse_index;
+	int was_full = istate->sparse_index == INDEX_EXPANDED;
 
 	ret = convert_to_sparse(istate, 0);
 

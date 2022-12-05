@@ -926,11 +926,40 @@ test_expect_success 'format-patch --numstat should produce a patch' '
 '
 
 test_expect_success 'format-patch -- <path>' '
-	git format-patch main..side -- file 2>error &&
-	! grep "Use .--" error
+	rm -f *.patch &&
+	git checkout -b pathspec main &&
+
+	echo file_a 1 >file_a &&
+	echo file_b 1 >file_b &&
+	git add file_a file_b &&
+	git commit -m pathspec_initial &&
+
+	echo file_a 2 >>file_a &&
+	git add file_a &&
+	git commit -m pathspec_a &&
+
+	echo file_b 2 >>file_b &&
+	git add file_b &&
+	git commit -m pathspec_b &&
+
+	echo file_a 3 >>file_a &&
+	echo file_b 3 >>file_b &&
+	git add file_a file_b &&
+	git commit -m pathspec_ab &&
+
+	cat >expect <<-\EOF &&
+	0001-pathspec_initial.patch
+	0002-pathspec_a.patch
+	0003-pathspec_ab.patch
+	EOF
+
+	git format-patch main..pathspec -- file_a >output &&
+	test_cmp expect output &&
+	! grep file_b *.patch
 '
 
 test_expect_success 'format-patch --ignore-if-in-upstream HEAD' '
+	git checkout side &&
 	git format-patch --ignore-if-in-upstream HEAD
 '
 
@@ -1371,6 +1400,43 @@ test_expect_success '--from omits redundant in-body header' '
 	test_cmp expect patch.head
 '
 
+test_expect_success 'with --force-in-body-from, redundant in-body from is kept' '
+	git format-patch --force-in-body-from \
+		-1 --stdout --from="A U Thor <author@example.com>" >patch &&
+	cat >expect <<-\EOF &&
+	From: A U Thor <author@example.com>
+
+	From: A U Thor <author@example.com>
+
+	EOF
+	sed -ne "/^From:/p; /^$/p; /^---$/q" patch >patch.head &&
+	test_cmp expect patch.head
+'
+
+test_expect_success 'format.forceInBodyFrom, equivalent to --force-in-body-from' '
+	git -c format.forceInBodyFrom=yes format-patch \
+		-1 --stdout --from="A U Thor <author@example.com>" >patch &&
+	cat >expect <<-\EOF &&
+	From: A U Thor <author@example.com>
+
+	From: A U Thor <author@example.com>
+
+	EOF
+	sed -ne "/^From:/p; /^$/p; /^---$/q" patch >patch.head &&
+	test_cmp expect patch.head
+'
+
+test_expect_success 'format.forceInBodyFrom, equivalent to --force-in-body-from' '
+	git -c format.forceInBodyFrom=yes format-patch --no-force-in-body-from \
+		-1 --stdout --from="A U Thor <author@example.com>" >patch &&
+	cat >expect <<-\EOF &&
+	From: A U Thor <author@example.com>
+
+	EOF
+	sed -ne "/^From:/p; /^$/p; /^---$/q" patch >patch.head &&
+	test_cmp expect patch.head
+'
+
 test_expect_success 'in-body headers trigger content encoding' '
 	test_env GIT_AUTHOR_NAME="éxötìc" test_commit exotic &&
 	test_when_finished "git reset --hard HEAD^" &&
@@ -1391,7 +1457,7 @@ append_signoff()
 	C=$(git commit-tree HEAD^^{tree} -p HEAD) &&
 	git format-patch --stdout --signoff $C^..$C >append_signoff.patch &&
 	sed -n -e "1,/^---$/p" append_signoff.patch |
-		egrep -n "^Subject|Sign|^$"
+		grep -E -n "^Subject|Sign|^$"
 }
 
 test_expect_success 'signoff: commit with no body' '
@@ -2208,10 +2274,10 @@ test_expect_success 'format-patch --base with --attach' '
 test_expect_success 'format-patch --attach cover-letter only is non-multipart' '
 	test_when_finished "rm -fr patches" &&
 	git format-patch -o patches --cover-letter --attach=mimemime --base=HEAD~ -1 &&
-	! egrep "^--+mimemime" patches/0000*.patch &&
-	egrep "^--+mimemime$" patches/0001*.patch >output &&
+	! grep -E "^--+mimemime" patches/0000*.patch &&
+	grep -E "^--+mimemime$" patches/0001*.patch >output &&
 	test_line_count = 2 output &&
-	egrep "^--+mimemime--$" patches/0001*.patch >output &&
+	grep -E "^--+mimemime--$" patches/0001*.patch >output &&
 	test_line_count = 1 output
 '
 

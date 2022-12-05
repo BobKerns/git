@@ -66,8 +66,8 @@ static int parse_bundle_signature(struct bundle_header *header, const char *line
 	return -1;
 }
 
-static int parse_bundle_header(int fd, struct bundle_header *header,
-			       const char *report_path)
+int read_bundle_header_fd(int fd, struct bundle_header *header,
+			  const char *report_path)
 {
 	struct strbuf buf = STRBUF_INIT;
 	int status = 0;
@@ -143,7 +143,7 @@ int read_bundle_header(const char *path, struct bundle_header *header)
 
 	if (fd < 0)
 		return error(_("could not open '%s'"), path);
-	return parse_bundle_header(fd, header, path);
+	return read_bundle_header_fd(fd, header, path);
 }
 
 int is_bundle(const char *path, int quiet)
@@ -153,7 +153,7 @@ int is_bundle(const char *path, int quiet)
 
 	if (fd < 0)
 		return 0;
-	fd = parse_bundle_header(fd, &header, quiet ? NULL : path);
+	fd = read_bundle_header_fd(fd, &header, quiet ? NULL : path);
 	if (fd >= 0)
 		close(fd);
 	bundle_header_release(&header);
@@ -189,14 +189,14 @@ static int list_refs(struct string_list *r, int argc, const char **argv)
 
 int verify_bundle(struct repository *r,
 		  struct bundle_header *header,
-		  int verbose)
+		  enum verify_bundle_flags flags)
 {
 	/*
 	 * Do fast check, then if any prereqs are missing then go line by line
 	 * to be verbose about the errors
 	 */
 	struct string_list *p = &header->prerequisites;
-	struct rev_info revs;
+	struct rev_info revs = REV_INFO_INIT;
 	const char *argv[] = {NULL, "--all", NULL};
 	struct commit *commit;
 	int i, ret = 0, req_nr;
@@ -216,12 +216,15 @@ int verify_bundle(struct repository *r,
 			add_pending_object(&revs, o, name);
 			continue;
 		}
-		if (++ret == 1)
+		ret++;
+		if (flags & VERIFY_BUNDLE_QUIET)
+			continue;
+		if (ret == 1)
 			error("%s", message);
 		error("%s %s", oid_to_hex(oid), name);
 	}
 	if (revs.pending.nr != p->nr)
-		return ret;
+		goto cleanup;
 	req_nr = revs.pending.nr;
 	setup_revisions(2, argv, &revs, NULL);
 
@@ -243,21 +246,15 @@ int verify_bundle(struct repository *r,
 		assert(o); /* otherwise we'd have returned early */
 		if (o->flags & SHOWN)
 			continue;
-		if (++ret == 1)
+		ret++;
+		if (flags & VERIFY_BUNDLE_QUIET)
+			continue;
+		if (ret == 1)
 			error("%s", message);
 		error("%s %s", oid_to_hex(oid), name);
 	}
 
-	/* Clean up objects used, as they will be reused. */
-	for (i = 0; i < p->nr; i++) {
-		struct string_list_item *e = p->items + i;
-		struct object_id *oid = e->util;
-		commit = lookup_commit_reference_gently(r, oid, 1);
-		if (commit)
-			clear_commit_marks(commit, ALL_REV_FLAGS);
-	}
-
-	if (verbose) {
+	if (flags & VERIFY_BUNDLE_VERBOSE) {
 		struct string_list *r;
 
 		r = &header->references;
@@ -284,6 +281,16 @@ int verify_bundle(struct repository *r,
 			printf_ln("The bundle uses this filter: %s",
 				  list_objects_filter_spec(&header->filter));
 	}
+cleanup:
+	/* Clean up objects used, as they will be reused. */
+	for (i = 0; i < p->nr; i++) {
+		struct string_list_item *e = p->items + i;
+		struct object_id *oid = e->util;
+		commit = lookup_commit_reference_gently(r, oid, 1);
+		if (commit)
+			clear_commit_marks(commit, ALL_REV_FLAGS | PREREQ_MARK);
+	}
+	release_revisions(&revs);
 	return ret;
 }
 
@@ -616,7 +623,8 @@ err:
 }
 
 int unbundle(struct repository *r, struct bundle_header *header,
-	     int bundle_fd, struct strvec *extra_index_pack_args)
+	     int bundle_fd, struct strvec *extra_index_pack_args,
+	     enum verify_bundle_flags flags)
 {
 	struct child_process ip = CHILD_PROCESS_INIT;
 	strvec_pushl(&ip.args, "index-pack", "--fix-thin", "--stdin", NULL);
@@ -630,7 +638,7 @@ int unbundle(struct repository *r, struct bundle_header *header,
 		strvec_clear(extra_index_pack_args);
 	}
 
-	if (verify_bundle(r, header, 0))
+	if (verify_bundle(r, header, flags))
 		return -1;
 	ip.in = bundle_fd;
 	ip.no_stdout = 1;

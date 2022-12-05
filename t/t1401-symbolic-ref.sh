@@ -1,6 +1,8 @@
 #!/bin/sh
 
 test_description='basic symbolic-ref tests'
+
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 # If the tests munging HEAD fail, they can break detection of
@@ -160,6 +162,30 @@ test_expect_success 'symbolic-ref can resolve d/f name (ENOTDIR)' '
 	git update-ref refs/heads/outer/inner $head &&
 	echo refs/heads/outer >expect &&
 	git symbolic-ref HEAD >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'symbolic-ref refuses invalid target for non-HEAD' '
+	test_must_fail git symbolic-ref refs/heads/invalid foo..bar
+'
+
+test_expect_success 'symbolic-ref allows top-level target for non-HEAD' '
+	git symbolic-ref refs/heads/top-level FETCH_HEAD &&
+	git update-ref FETCH_HEAD HEAD &&
+	test_cmp_rev top-level HEAD
+'
+
+test_expect_success 'symbolic-ref pointing at another' '
+	git update-ref refs/heads/maint-2.37 HEAD &&
+	git symbolic-ref refs/heads/maint refs/heads/maint-2.37 &&
+	git checkout maint &&
+
+	git symbolic-ref HEAD >actual &&
+	echo refs/heads/maint-2.37 >expect &&
+	test_cmp expect actual &&
+
+	git symbolic-ref --no-recurse HEAD >actual &&
+	echo refs/heads/maint >expect &&
 	test_cmp expect actual
 '
 

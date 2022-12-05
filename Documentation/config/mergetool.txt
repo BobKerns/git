@@ -45,12 +45,21 @@ mergetool.meld.useAutoMerge::
 	value of `false` avoids using `--auto-merge` altogether, and is the
 	default value.
 
+mergetool.vimdiff.layout::
+	The vimdiff backend uses this variable to control how its split
+	windows look like. Applies even if you are using Neovim (`nvim`) or
+	gVim (`gvim`) as the merge tool. See BACKEND SPECIFIC HINTS section
+ifndef::git-mergetool[]
+	in linkgit:git-mergetool[1].
+endif::[]
+	for details.
+
 mergetool.hideResolved::
 	During a merge Git will automatically resolve as many conflicts as
 	possible and write the 'MERGED' file containing conflict markers around
 	any conflicts that it cannot resolve; 'LOCAL' and 'REMOTE' normally
 	represent the versions of the file from before Git's conflict
-	resolution. This flag causes 'LOCAL' and 'REMOTE' to be overwriten so
+	resolution. This flag causes 'LOCAL' and 'REMOTE' to be overwritten so
 	that only the unresolved conflicts are presented to the merge tool. Can
 	be configured per-tool via the `mergetool.<tool>.hideResolved`
 	configuration variable. Defaults to `false`.

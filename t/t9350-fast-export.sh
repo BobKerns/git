@@ -268,6 +268,7 @@ test_expect_success 'signed-tags=warn-strip' '
 
 test_expect_success 'setup submodule' '
 
+	test_config_global protocol.file.allow always &&
 	git checkout -f main &&
 	mkdir sub &&
 	(
@@ -293,6 +294,7 @@ test_expect_success 'setup submodule' '
 
 test_expect_success 'submodule fast-export | fast-import' '
 
+	test_config_global protocol.file.allow always &&
 	SUBENT1=$(git ls-tree main^ sub) &&
 	SUBENT2=$(git ls-tree main sub) &&
 	rm -rf new &&
@@ -498,6 +500,13 @@ test_expect_success 'path limiting with import-marks does not lose unmodified fi
 	git commit -mnext file &&
 	git fast-export --import-marks=marks simple -- file file0 >actual &&
 	grep file0 actual
+'
+
+test_expect_success 'path limiting works' '
+	git fast-export simple -- file >actual &&
+	sed -ne "s/^M .* //p" <actual | sort -u >actual.files &&
+	echo file >expect &&
+	test_cmp expect actual.files
 '
 
 test_expect_success 'avoid corrupt stream with non-existent mark' '

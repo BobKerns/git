@@ -9,6 +9,7 @@
 #include "parse-options.h"
 #include "unpack-trees.h"
 #include "dir.h"
+#include "quote.h"
 
 static char const * const archive_usage[] = {
 	N_("git archive [<options>] <tree-ish> [<path>...]"),
@@ -165,17 +166,15 @@ static int write_archive_entry(const struct object_id *oid, const char *base,
 		args->convert = check_attr_export_subst(check);
 	}
 
+	if (args->verbose)
+		fprintf(stderr, "%.*s\n", (int)path.len, path.buf);
+
 	if (S_ISDIR(mode) || S_ISGITLINK(mode)) {
-		if (args->verbose)
-			fprintf(stderr, "%.*s\n", (int)path.len, path.buf);
 		err = write_entry(args, oid, path.buf, path.len, mode, NULL, 0);
 		if (err)
 			return err;
 		return (S_ISDIR(mode) ? READ_TREE_RECURSIVE : 0);
 	}
-
-	if (args->verbose)
-		fprintf(stderr, "%.*s\n", (int)path.len, path.buf);
 
 	/* Stream it? */
 	if (S_ISREG(mode) && !args->convert &&
@@ -263,6 +262,7 @@ static int queue_or_write_archive_entry(const struct object_id *oid,
 struct extra_file_info {
 	char *base;
 	struct stat stat;
+	void *content;
 };
 
 int write_archive_entries(struct archiver_args *args,
@@ -331,19 +331,27 @@ int write_archive_entries(struct archiver_args *args,
 
 		put_be64(fake_oid.hash, i + 1);
 
-		strbuf_reset(&path_in_archive);
-		if (info->base)
-			strbuf_addstr(&path_in_archive, info->base);
-		strbuf_addstr(&path_in_archive, basename(path));
+		if (!info->content) {
+			strbuf_reset(&path_in_archive);
+			if (info->base)
+				strbuf_addstr(&path_in_archive, info->base);
+			strbuf_addstr(&path_in_archive, basename(path));
 
-		strbuf_reset(&content);
-		if (strbuf_read_file(&content, path, info->stat.st_size) < 0)
-			err = error_errno(_("cannot read '%s'"), path);
-		else
-			err = write_entry(args, &fake_oid, path_in_archive.buf,
-					  path_in_archive.len,
-					  info->stat.st_mode,
-					  content.buf, content.len);
+			strbuf_reset(&content);
+			if (strbuf_read_file(&content, path, info->stat.st_size) < 0)
+				err = error_errno(_("cannot read '%s'"), path);
+			else
+				err = write_entry(args, &fake_oid, path_in_archive.buf,
+						  path_in_archive.len,
+						  canon_mode(info->stat.st_mode),
+						  content.buf, content.len);
+		} else {
+			err = write_entry(args, &fake_oid,
+					  path, strlen(path),
+					  canon_mode(info->stat.st_mode),
+					  info->content, info->stat.st_size);
+		}
+
 		if (err)
 			break;
 	}
@@ -372,7 +380,8 @@ struct path_exists_context {
 	struct archiver_args *args;
 };
 
-static int reject_entry(const struct object_id *oid, struct strbuf *base,
+static int reject_entry(const struct object_id *oid UNUSED,
+			struct strbuf *base,
 			const char *filename, unsigned mode,
 			void *context)
 {
@@ -465,7 +474,7 @@ static void parse_treeish_arg(const char **argv,
 	}
 
 	tree = parse_tree_indirect(&oid);
-	if (tree == NULL)
+	if (!tree)
 		die(_("not a tree object: %s"), oid_to_hex(&oid));
 
 	if (prefix) {
@@ -489,10 +498,11 @@ static void parse_treeish_arg(const char **argv,
 	ar_args->time = archive_time;
 }
 
-static void extra_file_info_clear(void *util, const char *str)
+static void extra_file_info_clear(void *util, const char *str UNUSED)
 {
 	struct extra_file_info *info = util;
 	free(info->base);
+	free(info->content);
 	free(info);
 }
 
@@ -514,14 +524,49 @@ static int add_file_cb(const struct option *opt, const char *arg, int unset)
 	if (!arg)
 		return -1;
 
-	path = prefix_filename(args->prefix, arg);
-	item = string_list_append_nodup(&args->extra_files, path);
-	item->util = info = xmalloc(sizeof(*info));
+	info = xmalloc(sizeof(*info));
 	info->base = xstrdup_or_null(base);
-	if (stat(path, &info->stat))
-		die(_("File not found: %s"), path);
-	if (!S_ISREG(info->stat.st_mode))
-		die(_("Not a regular file: %s"), path);
+
+	if (!strcmp(opt->long_name, "add-file")) {
+		path = prefix_filename(args->prefix, arg);
+		if (stat(path, &info->stat))
+			die(_("File not found: %s"), path);
+		if (!S_ISREG(info->stat.st_mode))
+			die(_("Not a regular file: %s"), path);
+		info->content = NULL; /* read the file later */
+	} else if (!strcmp(opt->long_name, "add-virtual-file")) {
+		struct strbuf buf = STRBUF_INIT;
+		const char *p = arg;
+
+		if (*p != '"')
+			p = strchr(p, ':');
+		else if (unquote_c_style(&buf, p, &p) < 0)
+			die(_("unclosed quote: '%s'"), arg);
+
+		if (!p || *p != ':')
+			die(_("missing colon: '%s'"), arg);
+
+		if (p == arg)
+			die(_("empty file name: '%s'"), arg);
+
+		path = buf.len ?
+			strbuf_detach(&buf, NULL) : xstrndup(arg, p - arg);
+
+		if (args->prefix) {
+			char *save = path;
+			path = prefix_filename(args->prefix, path);
+			free(save);
+		}
+		memset(&info->stat, 0, sizeof(info->stat));
+		info->stat.st_mode = S_IFREG | 0644;
+		info->content = xstrdup(p + 1);
+		info->stat.st_size = strlen(info->content);
+	} else {
+		BUG("add_file_cb() called for %s", opt->long_name);
+	}
+	item = string_list_append_nodup(&args->extra_files, path);
+	item->util = info;
+
 	return 0;
 }
 
@@ -554,6 +599,9 @@ static int parse_archive_args(int argc, const char **argv,
 		{ OPTION_CALLBACK, 0, "add-file", args, N_("file"),
 		  N_("add untracked file to archive"), 0, add_file_cb,
 		  (intptr_t)&base },
+		{ OPTION_CALLBACK, 0, "add-virtual-file", args,
+		  N_("path:content"), N_("add untracked file to archive"), 0,
+		  add_file_cb, (intptr_t)&base },
 		OPT_STRING('o', "output", &output, N_("file"),
 			N_("write the archive to this file")),
 		OPT_BOOL(0, "worktree-attributes", &worktree_attributes,

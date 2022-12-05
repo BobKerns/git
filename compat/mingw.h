@@ -332,6 +332,9 @@ int mingw_getpagesize(void);
 int win32_fsync_no_flush(int fd);
 #define fsync_no_flush win32_fsync_no_flush
 
+#define FSYNC_COMPONENTS_PLATFORM_DEFAULT (FSYNC_COMPONENTS_DEFAULT | FSYNC_COMPONENT_LOOSE_OBJECT)
+#define FSYNC_METHOD_DEFAULT (FSYNC_METHOD_BATCH)
+
 struct rlimit {
 	unsigned int rlim_cur;
 };
@@ -455,6 +458,13 @@ char *mingw_query_user_email(void);
 #else
 #include <inttypes.h>
 #endif
+
+/**
+ * Verifies that the specified path is owned by the user running the
+ * current process.
+ */
+int is_path_owned_by_current_sid(const char *path, struct strbuf *report);
+#define is_path_owned_by_current_user is_path_owned_by_current_sid
 
 /**
  * Verifies that the given path is a valid one on Windows.

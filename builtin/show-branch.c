@@ -14,7 +14,8 @@ static const char* show_branch_usage[] = {
     N_("git show-branch [-a | --all] [-r | --remotes] [--topo-order | --date-order]\n"
        "                [--current] [--color[=<when>] | --no-color] [--sparse]\n"
        "                [--more=<n> | --list | --independent | --merge-base]\n"
-       "                [--no-name | --sha1-name] [--topics] [(<rev> | <glob>)...]"),
+       "                [--no-name | --sha1-name] [--topics]\n"
+       "                [(<rev> | <glob>)...]"),
     N_("git show-branch (-g | --reflog)[=<n>[,<base>]] [--list] [<ref>]"),
     NULL
 };
@@ -404,7 +405,7 @@ static int append_ref(const char *refname, const struct object_id *oid,
 }
 
 static int append_head_ref(const char *refname, const struct object_id *oid,
-			   int flag, void *cb_data)
+			   int flag UNUSED, void *cb_data UNUSED)
 {
 	struct object_id tmp;
 	int ofs = 11;
@@ -419,7 +420,7 @@ static int append_head_ref(const char *refname, const struct object_id *oid,
 }
 
 static int append_remote_ref(const char *refname, const struct object_id *oid,
-			     int flag, void *cb_data)
+			     int flag UNUSED, void *cb_data UNUSED)
 {
 	struct object_id tmp;
 	int ofs = 13;
@@ -434,7 +435,7 @@ static int append_remote_ref(const char *refname, const struct object_id *oid,
 }
 
 static int append_tag_ref(const char *refname, const struct object_id *oid,
-			  int flag, void *cb_data)
+			  int flag UNUSED, void *cb_data UNUSED)
 {
 	if (!starts_with(refname, "refs/tags/"))
 		return 0;
@@ -711,6 +712,10 @@ int cmd_show_branch(int ac, const char **av, const char *prefix)
 			die(_("options '%s' and '%s' cannot be used together"), "--reflog",
 				"--all/--remotes/--independent/--merge-base");
 	}
+
+	if (with_current_branch && reflog)
+		die(_("options '%s' and '%s' cannot be used together"),
+		    "--reflog", "--current");
 
 	/* If nothing is specified, show all branches by default */
 	if (ac <= topics && all_heads + all_remotes == 0)

@@ -100,6 +100,9 @@ no_promisor_pack_found:
 		strvec_push(&rev_list.args, "--exclude-promisor-objects");
 	if (!opt->is_deepening_fetch) {
 		strvec_push(&rev_list.args, "--not");
+		if (opt->exclude_hidden_refs_section)
+			strvec_pushf(&rev_list.args, "--exclude-hidden=%s",
+				     opt->exclude_hidden_refs_section);
 		strvec_push(&rev_list.args, "--all");
 	}
 	strvec_push(&rev_list.args, "--quiet");
@@ -110,7 +113,7 @@ no_promisor_pack_found:
 
 	rev_list.git_cmd = 1;
 	if (opt->env)
-		strvec_pushv(&rev_list.env_array, opt->env);
+		strvec_pushv(&rev_list.env, opt->env);
 	rev_list.in = -1;
 	rev_list.no_stdout = 1;
 	if (opt->err_fd)
