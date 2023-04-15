@@ -1,8 +1,12 @@
 #include "cache.h"
+#include "abspath.h"
 #include "checkout.h"
 #include "config.h"
 #include "builtin.h"
 #include "dir.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
 #include "parse-options.h"
 #include "strvec.h"
 #include "branch.h"
@@ -13,6 +17,7 @@
 #include "submodule.h"
 #include "utf8.h"
 #include "worktree.h"
+#include "wrapper.h"
 #include "quote.h"
 
 #define BUILTIN_WORKTREE_ADD_USAGE \
@@ -173,7 +178,7 @@ static void prune_worktrees(void)
 {
 	struct strbuf reason = STRBUF_INIT;
 	struct strbuf main_path = STRBUF_INIT;
-	struct string_list kept = STRING_LIST_INIT_NODUP;
+	struct string_list kept = STRING_LIST_INIT_DUP;
 	DIR *dir = opendir(git_path("worktrees"));
 	struct dirent *d;
 	if (!dir)
@@ -184,14 +189,14 @@ static void prune_worktrees(void)
 		if (should_prune_worktree(d->d_name, &reason, &path, expire))
 			prune_worktree(d->d_name, reason.buf);
 		else if (path)
-			string_list_append(&kept, path)->util = xstrdup(d->d_name);
+			string_list_append_nodup(&kept, path)->util = xstrdup(d->d_name);
 	}
 	closedir(dir);
 
 	strbuf_add_absolute_path(&main_path, get_git_common_dir());
 	/* massage main worktree absolute path to match 'gitdir' content */
 	strbuf_strip_suffix(&main_path, "/.");
-	string_list_append(&kept, strbuf_detach(&main_path, NULL));
+	string_list_append_nodup(&kept, strbuf_detach(&main_path, NULL));
 	prune_dups(&kept);
 	string_list_clear(&kept, 1);
 
@@ -319,7 +324,6 @@ static void copy_filtered_worktree_config(const char *worktree_git_dir)
 
 	if (file_exists(from_file)) {
 		struct config_set cs = { { 0 } };
-		const char *core_worktree;
 		int bare;
 
 		if (safe_create_leading_directories(to_file) ||
@@ -338,7 +342,7 @@ static void copy_filtered_worktree_config(const char *worktree_git_dir)
 				to_file, "core.bare", NULL, "true", 0))
 			error(_("failed to unset '%s' in '%s'"),
 				"core.bare", to_file);
-		if (!git_configset_get_value(&cs, "core.worktree", &core_worktree) &&
+		if (!git_configset_get(&cs, "core.worktree") &&
 			git_config_set_in_file_gently(to_file,
 							"core.worktree", NULL))
 			error(_("failed to unset '%s' in '%s'"),
@@ -552,7 +556,7 @@ static void print_preparing_worktree_line(int detach,
 		else
 			fprintf_ln(stderr, _("Preparing worktree (resetting branch '%s'; was at %s)"),
 				  new_branch,
-				  find_unique_abbrev(&commit->object.oid, DEFAULT_ABBREV));
+				  repo_find_unique_abbrev(the_repository, &commit->object.oid, DEFAULT_ABBREV));
 	} else if (new_branch) {
 		fprintf_ln(stderr, _("Preparing worktree (new branch '%s')"), new_branch);
 	} else {
@@ -566,7 +570,7 @@ static void print_preparing_worktree_line(int detach,
 			if (!commit)
 				die(_("invalid reference: %s"), branch);
 			fprintf_ln(stderr, _("Preparing worktree (detached HEAD %s)"),
-				  find_unique_abbrev(&commit->object.oid, DEFAULT_ABBREV));
+				  repo_find_unique_abbrev(the_repository, &commit->object.oid, DEFAULT_ABBREV));
 		}
 		strbuf_release(&s);
 	}
@@ -629,6 +633,7 @@ static int add(int ac, const char **av, const char *prefix)
 			 N_("try to match the new branch name with a remote-tracking branch")),
 		OPT_END()
 	};
+	int ret;
 
 	memset(&opts, 0, sizeof(opts));
 	opts.checkout = 1;
@@ -705,9 +710,9 @@ static int add(int ac, const char **av, const char *prefix)
 		die(_("--[no-]track can only be used if a new branch is created"));
 	}
 
-	UNLEAK(path);
-	UNLEAK(opts);
-	return add_worktree(path, branch, &opts);
+	ret = add_worktree(path, branch, &opts);
+	free(path);
+	return ret;
 }
 
 static void show_worktree_porcelain(struct worktree *wt, int line_terminator)
@@ -755,7 +760,7 @@ static void show_worktree(struct worktree *wt, int path_maxlen, int abbrev_len)
 		strbuf_addstr(&sb, "(bare)");
 	else {
 		strbuf_addf(&sb, "%-*s ", abbrev_len,
-				find_unique_abbrev(&wt->head_oid, DEFAULT_ABBREV));
+				repo_find_unique_abbrev(the_repository, &wt->head_oid, DEFAULT_ABBREV));
 		if (wt->is_detached)
 			strbuf_addstr(&sb, "(detached HEAD)");
 		else if (wt->head_ref) {
@@ -792,7 +797,7 @@ static void measure_widths(struct worktree **wt, int *abbrev, int *maxlen)
 
 		if (path_len > *maxlen)
 			*maxlen = path_len;
-		sha1_len = strlen(find_unique_abbrev(&wt[i]->head_oid, *abbrev));
+		sha1_len = strlen(repo_find_unique_abbrev(the_repository, &wt[i]->head_oid, *abbrev));
 		if (sha1_len > *abbrev)
 			*abbrev = sha1_len;
 	}
@@ -922,7 +927,7 @@ static int unlock_worktree(int ac, const char **av, const char *prefix)
 
 static void validate_no_submodules(const struct worktree *wt)
 {
-	struct index_state istate = { NULL };
+	struct index_state istate = INDEX_STATE_INIT(the_repository);
 	struct strbuf path = STRBUF_INIT;
 	int i, found_submodules = 0;
 

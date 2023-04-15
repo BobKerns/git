@@ -10,7 +10,11 @@
 
 #define USE_THE_INDEX_VARIABLE
 #include "builtin.h"
+#include "abspath.h"
 #include "config.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
 #include "lockfile.h"
 #include "parse-options.h"
 #include "fetch-pack.h"
@@ -29,6 +33,7 @@
 #include "branch.h"
 #include "remote.h"
 #include "run-command.h"
+#include "setup.h"
 #include "connected.h"
 #include "packfile.h"
 #include "list-objects-filter-options.h"
@@ -547,9 +552,9 @@ static void write_followtags(const struct ref *refs, const char *msg)
 			continue;
 		if (ends_with(ref->name, "^{}"))
 			continue;
-		if (!has_object_file_with_flags(&ref->old_oid,
-						OBJECT_INFO_QUICK |
-						OBJECT_INFO_SKIP_FETCH_OBJECT))
+		if (!repo_has_object_file_with_flags(the_repository, &ref->old_oid,
+						     OBJECT_INFO_QUICK |
+						     OBJECT_INFO_SKIP_FETCH_OBJECT))
 			continue;
 		update_ref(msg, ref->name, &ref->old_oid, NULL, 0,
 			   UPDATE_REFS_DIE_ON_ERR);
@@ -892,6 +897,7 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 	int is_bundle = 0, is_local;
 	int reject_shallow = 0;
 	const char *repo_name, *repo, *work_tree, *git_dir;
+	char *repo_to_free = NULL;
 	char *path = NULL, *dir, *display_repo = NULL;
 	int dest_exists, real_dest_exists = 0;
 	const struct ref *refs, *remote_head;
@@ -908,6 +914,7 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 	int err = 0, complete_refs_before_fetch = 1;
 	int submodule_progress;
 	int filter_submodules = 0;
+	int hash_algo;
 
 	struct transport_ls_refs_options transport_ls_refs_options =
 		TRANSPORT_LS_REFS_OPTIONS_INIT;
@@ -949,7 +956,7 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 	path = get_repo_path(repo_name, &is_bundle);
 	if (path) {
 		FREE_AND_NULL(path);
-		repo = absolute_pathdup(repo_name);
+		repo = repo_to_free = absolute_pathdup(repo_name);
 	} else if (strchr(repo_name, ':')) {
 		repo = repo_name;
 		display_repo = transport_anonymize_url(repo);
@@ -1170,10 +1177,6 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 	refspec_appendf(&remote->fetch, "+%s*:%s*", src_ref_prefix,
 			branch_top.buf);
 
-	transport = transport_get(remote, remote->url[0]);
-	transport_set_verbosity(transport, option_verbosity, option_progress);
-	transport->family = family;
-
 	path = get_repo_path(remote->url[0], &is_bundle);
 	is_local = option_local != 0 && path && !is_bundle;
 	if (is_local) {
@@ -1195,6 +1198,10 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 	}
 	if (option_local > 0 && !is_local)
 		warning(_("--local is ignored"));
+
+	transport = transport_get(remote, path ? path : remote->url[0]);
+	transport_set_verbosity(transport, option_verbosity, option_progress);
+	transport->family = family;
 	transport->cloning = 1;
 
 	if (is_bundle) {
@@ -1248,12 +1255,16 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 	 * data from the --bundle-uri option.
 	 */
 	if (bundle_uri) {
+		int has_heuristic = 0;
+
 		/* At this point, we need the_repository to match the cloned repo. */
 		if (repo_init(the_repository, git_dir, work_tree))
 			warning(_("failed to initialize the repo, skipping bundle URI"));
-		else if (fetch_bundle_uri(the_repository, bundle_uri))
+		else if (fetch_bundle_uri(the_repository, bundle_uri, &has_heuristic))
 			warning(_("failed to fetch objects from bundle URI '%s'"),
 				bundle_uri);
+		else if (has_heuristic)
+			git_config_set_gently("fetch.bundleuri", bundle_uri);
 	}
 
 	strvec_push(&transport_ls_refs_options.ref_prefixes, "HEAD");
@@ -1271,15 +1282,36 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 	if (refs)
 		mapped_refs = wanted_peer_refs(refs, &remote->fetch);
 
-	if (mapped_refs) {
-		int hash_algo = hash_algo_by_ptr(transport_get_hash_algo(transport));
+	if (!bundle_uri) {
+		/*
+		* Populate transport->got_remote_bundle_uri and
+		* transport->bundle_uri. We might get nothing.
+		*/
+		transport_get_remote_bundle_uri(transport);
+
+		if (transport->bundles &&
+		    hashmap_get_size(&transport->bundles->bundles)) {
+			/* At this point, we need the_repository to match the cloned repo. */
+			if (repo_init(the_repository, git_dir, work_tree))
+				warning(_("failed to initialize the repo, skipping bundle URI"));
+			else if (fetch_bundle_list(the_repository,
+						   transport->bundles))
+				warning(_("failed to fetch advertised bundles"));
+		} else {
+			clear_bundle_list(transport->bundles);
+			FREE_AND_NULL(transport->bundles);
+		}
+	}
 
 		/*
 		 * Now that we know what algorithm the remote side is using,
 		 * let's set ours to the same thing.
 		 */
-		initialize_repository_version(hash_algo, 1);
-		repo_set_hash_algo(the_repository, hash_algo);
+	hash_algo = hash_algo_by_ptr(transport_get_hash_algo(transport));
+	initialize_repository_version(hash_algo, 1);
+	repo_set_hash_algo(the_repository, hash_algo);
+
+	if (mapped_refs) {
 		/*
 		 * transport_get_remote_refs() may return refs with null sha-1
 		 * in mapped_refs (see struct transport->get_refs_list
@@ -1392,7 +1424,7 @@ int cmd_clone(int argc, const char **argv, const char *prefix)
 	free(unborn_head);
 	free(dir);
 	free(path);
-	UNLEAK(repo);
+	free(repo_to_free);
 	junk_mode = JUNK_LEAVE_ALL;
 
 	transport_ls_refs_options_release(&transport_ls_refs_options);

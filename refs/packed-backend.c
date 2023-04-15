@@ -1,11 +1,15 @@
 #include "../cache.h"
+#include "../alloc.h"
 #include "../config.h"
+#include "../gettext.h"
+#include "../hex.h"
 #include "../refs.h"
 #include "refs-internal.h"
 #include "packed-backend.h"
 #include "../iterator.h"
 #include "../lockfile.h"
 #include "../chdir-notify.h"
+#include "../write-or-die.h"
 
 enum mmap_strategy {
 	/*
@@ -1263,7 +1267,8 @@ static int write_with_updates(struct packed_ref_store *refs,
 		goto error;
 	}
 
-	if (fsync_component(FSYNC_COMPONENT_REFERENCE, get_tempfile_fd(refs->tempfile)) ||
+	if (fflush(out) ||
+	    fsync_component(FSYNC_COMPONENT_REFERENCE, get_tempfile_fd(refs->tempfile)) ||
 	    close_tempfile_gently(refs->tempfile)) {
 		strbuf_addf(err, "error closing file %s: %s",
 			    get_tempfile_path(refs->tempfile),

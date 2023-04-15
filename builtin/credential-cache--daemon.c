@@ -1,4 +1,7 @@
 #include "builtin.h"
+#include "abspath.h"
+#include "alloc.h"
+#include "gettext.h"
 #include "parse-options.h"
 
 #ifndef NO_UNIX_SOCKETS
@@ -127,6 +130,9 @@ static void serve_one_client(FILE *in, FILE *out)
 		if (e) {
 			fprintf(out, "username=%s\n", e->item.username);
 			fprintf(out, "password=%s\n", e->item.password);
+			if (e->item.password_expiry_utc != TIME_MAX)
+				fprintf(out, "password_expiry_utc=%"PRItime"\n",
+					e->item.password_expiry_utc);
 		}
 	}
 	else if (!strcmp(action.buf, "exit")) {

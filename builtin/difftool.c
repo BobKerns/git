@@ -13,10 +13,14 @@
  */
 #define USE_THE_INDEX_VARIABLE
 #include "cache.h"
+#include "abspath.h"
 #include "config.h"
 #include "builtin.h"
 #include "run-command.h"
+#include "environment.h"
 #include "exec-cmd.h"
+#include "gettext.h"
+#include "hex.h"
 #include "parse-options.h"
 #include "strvec.h"
 #include "strbuf.h"
@@ -24,6 +28,8 @@
 #include "object-store.h"
 #include "dir.h"
 #include "entry.h"
+#include "setup.h"
+#include "wrapper.h"
 
 static int trust_exit_code;
 
@@ -295,7 +301,8 @@ static char *get_symlink(const struct object_id *oid, const char *path)
 	} else {
 		enum object_type type;
 		unsigned long size;
-		data = read_object_file(oid, &type, &size);
+		data = repo_read_object_file(the_repository, oid, &type,
+					     &size);
 		if (!data)
 			die(_("could not read object %s for symlink %s"),
 				oid_to_hex(oid), path);
@@ -361,7 +368,7 @@ static int run_dir_diff(const char *extcmd, int symlinks, const char *prefix,
 	struct hashmap symlinks2 = HASHMAP_INIT(pair_cmp, NULL);
 	struct hashmap_iter iter;
 	struct pair_entry *entry;
-	struct index_state wtindex;
+	struct index_state wtindex = INDEX_STATE_INIT(the_repository);
 	struct checkout lstate, rstate;
 	int err = 0;
 	struct child_process cmd = CHILD_PROCESS_INIT;
@@ -386,8 +393,6 @@ static int run_dir_diff(const char *extcmd, int symlinks, const char *prefix,
 		strbuf_addch(&wtdir, '/');
 	mkdir(ldir.buf, 0700);
 	mkdir(rdir.buf, 0700);
-
-	memset(&wtindex, 0, sizeof(wtindex));
 
 	memset(&lstate, 0, sizeof(lstate));
 	lstate.base_dir = lbase_dir = xstrdup(ldir.buf);

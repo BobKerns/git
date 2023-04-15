@@ -3,6 +3,8 @@
 #include "config.h"
 #include "diff.h"
 #include "commit.h"
+#include "gettext.h"
+#include "hex.h"
 #include "log-tree.h"
 #include "builtin.h"
 #include "submodule.h"

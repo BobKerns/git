@@ -1,4 +1,6 @@
 #include "cache.h"
+#include "gettext.h"
+#include "hex.h"
 #include "object-store.h"
 #include "promisor-remote.h"
 #include "config.h"

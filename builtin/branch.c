@@ -8,9 +8,11 @@
 #include "cache.h"
 #include "config.h"
 #include "color.h"
+#include "environment.h"
 #include "refs.h"
 #include "commit.h"
 #include "builtin.h"
+#include "gettext.h"
 #include "remote.h"
 #include "parse-options.h"
 #include "branch.h"
@@ -24,6 +26,7 @@
 #include "worktree.h"
 #include "help.h"
 #include "commit-reach.h"
+#include "wrapper.h"
 
 static const char * const builtin_branch_usage[] = {
 	N_("git branch [<options>] [-r | -a] [--merged] [--no-merged]"),
@@ -150,17 +153,18 @@ static int branch_merged(int kind, const char *name,
 	if (!reference_rev)
 		reference_rev = head_rev;
 
-	merged = reference_rev ? in_merge_bases(rev, reference_rev) : 0;
+	merged = reference_rev ? repo_in_merge_bases(the_repository, rev,
+						     reference_rev) : 0;
 
 	/*
 	 * After the safety valve is fully redefined to "check with
 	 * upstream, if any, otherwise with HEAD", we should just
-	 * return the result of the in_merge_bases() above without
+	 * return the result of the repo_in_merge_bases() above without
 	 * any of the following code, but during the transition period,
 	 * a gentle reminder is in order.
 	 */
 	if ((head_rev != reference_rev) &&
-	    (head_rev ? in_merge_bases(rev, head_rev) : 0) != merged) {
+	    (head_rev ? repo_in_merge_bases(the_repository, rev, head_rev) : 0) != merged) {
 		if (merged)
 			warning(_("deleting branch '%s' that has been merged to\n"
 				"         '%s', but not yet merged to HEAD."),
@@ -280,7 +284,7 @@ static int delete_branches(int argc, const char **argv, int force, int kinds,
 		item = string_list_append(&refs_to_delete, name);
 		item->util = xstrdup((flags & REF_ISBROKEN) ? "broken"
 				    : (flags & REF_ISSYMREF) ? target
-				    : find_unique_abbrev(&oid, DEFAULT_ABBREV));
+				    : repo_find_unique_abbrev(the_repository, &oid, DEFAULT_ABBREV));
 
 	next:
 		free(target);
@@ -448,6 +452,7 @@ static void print_ref_list(struct ref_filter *filter, struct ref_sorting *sortin
 	if (verify_ref_format(format))
 		die(_("unable to parse format string"));
 
+	filter_ahead_behind(the_repository, format, &array);
 	ref_array_sort(sorting, &array);
 
 	for (i = 0; i < array.nr; i++) {
@@ -581,13 +586,13 @@ static void copy_or_rename_branch(const char *oldname, const char *newname, int 
 	strbuf_release(&logmsg);
 
 	strbuf_addf(&oldsection, "branch.%s", interpreted_oldname);
-	strbuf_release(&oldref);
 	strbuf_addf(&newsection, "branch.%s", interpreted_newname);
-	strbuf_release(&newref);
 	if (!copy && git_config_rename_section(oldsection.buf, newsection.buf) < 0)
 		die(_("Branch is renamed, but update of config-file failed"));
-	if (copy && strcmp(oldname, newname) && git_config_copy_section(oldsection.buf, newsection.buf) < 0)
+	if (copy && strcmp(interpreted_oldname, interpreted_newname) && git_config_copy_section(oldsection.buf, newsection.buf) < 0)
 		die(_("Branch is copied, but update of config-file failed"));
+	strbuf_release(&oldref);
+	strbuf_release(&newref);
 	strbuf_release(&oldsection);
 	strbuf_release(&newsection);
 }

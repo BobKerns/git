@@ -1,12 +1,17 @@
 /*
  * Utilities for paths and pathnames
  */
-#include "cache.h"
+#include "git-compat-util.h"
+#include "abspath.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
 #include "repository.h"
 #include "strbuf.h"
 #include "string-list.h"
 #include "dir.h"
 #include "worktree.h"
+#include "setup.h"
 #include "submodule-config.h"
 #include "path.h"
 #include "packfile.h"
@@ -347,7 +352,8 @@ static void init_common_trie(void)
  * Helper function for update_common_dir: returns 1 if the dir
  * prefix is common.
  */
-static int check_common(const char *unmatched, void *value, void *baton)
+static int check_common(const char *unmatched, void *value,
+			void *baton UNUSED)
 {
 	struct common_dir *dir = value;
 

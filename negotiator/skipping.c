@@ -1,7 +1,8 @@
-#include "cache.h"
+#include "git-compat-util.h"
 #include "skipping.h"
 #include "../commit.h"
 #include "../fetch-negotiator.h"
+#include "../hex.h"
 #include "../prio-queue.h"
 #include "../refs.h"
 #include "../tag.h"
@@ -50,7 +51,7 @@ struct data {
 	int non_common_revs;
 };
 
-static int compare(const void *a_, const void *b_, void *unused)
+static int compare(const void *a_, const void *b_, void *data UNUSED)
 {
 	const struct entry *a = a_;
 	const struct entry *b = b_;
@@ -183,7 +184,7 @@ static const struct object_id *get_rev(struct data *data)
 		if (!(commit->object.flags & COMMON) && !entry->ttl)
 			to_send = commit;
 
-		parse_commit(commit);
+		repo_parse_commit(the_repository, commit);
 		for (p = commit->parents; p; p = p->next)
 			parent_pushed |= push_parent(data, entry, p->item);
 

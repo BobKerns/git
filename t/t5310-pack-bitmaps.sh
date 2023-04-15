@@ -404,6 +404,26 @@ test_bitmap_cases () {
 		)
 	'
 
+	test_expect_success 'pack.preferBitmapTips' '
+		git init repo &&
+		test_when_finished "rm -rf repo" &&
+		(
+			cd repo &&
+			git config pack.writeBitmapLookupTable '"$writeLookupTable"' &&
+			test_commit_bulk --message="%s" 103 &&
+
+			cat >>.git/config <<-\EOF &&
+			[pack]
+				preferBitmapTips
+			EOF
+			cat >expect <<-\EOF &&
+			error: missing value for '\''pack.preferbitmaptips'\''
+			EOF
+			git repack -adb 2>actual &&
+			test_cmp expect actual
+		)
+	'
+
 	test_expect_success 'complains about multiple pack bitmaps' '
 		rm -fr repo &&
 		git init repo &&
@@ -428,8 +448,9 @@ test_bitmap_cases () {
 			test_line_count = 2 packs &&
 			test_line_count = 2 bitmaps &&
 
-			git rev-list --use-bitmap-index HEAD 2>err &&
-			grep "ignoring extra bitmap file" err
+			GIT_TRACE2_EVENT=$(pwd)/trace2.txt git rev-list --use-bitmap-index HEAD &&
+			grep "opened bitmap" trace2.txt &&
+			grep "ignoring extra bitmap" trace2.txt
 		)
 	'
 }

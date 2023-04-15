@@ -4,6 +4,9 @@
 #include "run-command.h"
 #include "commit.h"
 #include "diff.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
 #include "revision.h"
 #include "remote.h"
 #include "string-list.h"
@@ -14,6 +17,7 @@
 #include "refspec.h"
 #include "transport-internal.h"
 #include "protocol.h"
+#include "wrapper.h"
 
 static int debug;
 
@@ -1081,7 +1085,7 @@ static int push_refs_with_export(struct transport *transport,
 		struct object_id oid;
 
 		private = apply_refspecs(&data->rs, ref->name);
-		if (private && !get_oid(private, &oid)) {
+		if (private && !repo_get_oid(the_repository, private, &oid)) {
 			strbuf_addf(&buf, "^%s", private);
 			string_list_append_nodup(&revlist_args,
 						 strbuf_detach(&buf, NULL));
@@ -1267,9 +1271,22 @@ static struct ref *get_refs_list_using_list(struct transport *transport,
 	return ret;
 }
 
+static int get_bundle_uri(struct transport *transport)
+{
+	get_helper(transport);
+
+	if (process_connect(transport, 0)) {
+		do_take_over(transport);
+		return transport->vtable->get_bundle_uri(transport);
+	}
+
+	return -1;
+}
+
 static struct transport_vtable vtable = {
 	.set_option	= set_helper_option,
 	.get_refs_list	= get_refs_list,
+	.get_bundle_uri = get_bundle_uri,
 	.fetch_refs	= fetch_refs,
 	.push_refs	= push_refs,
 	.connect	= connect_helper,

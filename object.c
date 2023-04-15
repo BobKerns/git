@@ -1,4 +1,6 @@
 #include "cache.h"
+#include "gettext.h"
+#include "hex.h"
 #include "object.h"
 #include "replace-object.h"
 #include "object-store.h"
@@ -212,8 +214,7 @@ struct object *parse_object_buffer(struct repository *r, const struct object_id 
 	if (type == OBJ_BLOB) {
 		struct blob *blob = lookup_blob(r, oid);
 		if (blob) {
-			if (parse_blob_buffer(blob, buffer, size))
-				return NULL;
+			parse_blob_buffer(blob);
 			obj = &blob->object;
 		}
 	} else if (type == OBJ_TREE) {
@@ -292,7 +293,7 @@ struct object *parse_object_with_flags(struct repository *r,
 			error(_("hash mismatch %s"), oid_to_hex(oid));
 			return NULL;
 		}
-		parse_blob_buffer(lookup_blob(r, oid), NULL, 0);
+		parse_blob_buffer(lookup_blob(r, oid));
 		return lookup_object(r, oid);
 	}
 

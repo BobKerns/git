@@ -1,6 +1,10 @@
 #include "cache.h"
+#include "alloc.h"
 #include "repository.h"
 #include "config.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
 #include "lockfile.h"
 #include "refs.h"
 #include "pkt-line.h"
@@ -27,6 +31,7 @@
 #include "commit-graph.h"
 #include "sigchain.h"
 #include "mergesort.h"
+#include "wrapper.h"
 
 static int transfer_unpack_limit = -1;
 static int fetch_unpack_limit = -1;
@@ -722,7 +727,7 @@ static void filter_refs(struct fetch_pack_args *args,
 	*refs = newlist;
 }
 
-static void mark_alternate_complete(struct fetch_negotiator *unused,
+static void mark_alternate_complete(struct fetch_negotiator *negotiator UNUSED,
 				    struct object *obj)
 {
 	mark_complete(&obj->oid);
@@ -762,9 +767,9 @@ static void mark_complete_and_common_ref(struct fetch_negotiator *negotiator,
 		if (!commit) {
 			struct object *o;
 
-			if (!has_object_file_with_flags(&ref->old_oid,
-						OBJECT_INFO_QUICK |
-						OBJECT_INFO_SKIP_FETCH_OBJECT))
+			if (!repo_has_object_file_with_flags(the_repository, &ref->old_oid,
+							     OBJECT_INFO_QUICK |
+							     OBJECT_INFO_SKIP_FETCH_OBJECT))
 				continue;
 			o = parse_object(the_repository, &ref->old_oid);
 			if (!o || o->type != OBJ_COMMIT)
@@ -1317,15 +1322,15 @@ static void write_fetch_command_and_capabilities(struct strbuf *req_buf,
 {
 	const char *hash_name;
 
-	if (server_supports_v2("fetch", 1))
-		packet_buf_write(req_buf, "command=fetch");
-	if (server_supports_v2("agent", 0))
+	ensure_server_supports_v2("fetch");
+	packet_buf_write(req_buf, "command=fetch");
+	if (server_supports_v2("agent"))
 		packet_buf_write(req_buf, "agent=%s", git_user_agent_sanitized());
-	if (advertise_sid && server_supports_v2("session-id", 0))
+	if (advertise_sid && server_supports_v2("session-id"))
 		packet_buf_write(req_buf, "session-id=%s", trace2_session_id());
-	if (server_options && server_options->nr &&
-	    server_supports_v2("server-option", 1)) {
+	if (server_options && server_options->nr) {
 		int i;
+		ensure_server_supports_v2("server-option");
 		for (i = 0; i < server_options->nr; i++)
 			packet_buf_write(req_buf, "server-option=%s",
 					 server_options->items[i].string);
@@ -1963,7 +1968,7 @@ static void update_shallow(struct fetch_pack_args *args,
 		struct oid_array extra = OID_ARRAY_INIT;
 		struct object_id *oid = si->shallow->oid;
 		for (i = 0; i < si->shallow->nr; i++)
-			if (has_object_file(&oid[i]))
+			if (repo_has_object_file(the_repository, &oid[i]))
 				oid_array_append(&extra, &oid[i]);
 		if (extra.nr) {
 			setup_alternate_shallow(&shallow_lock,

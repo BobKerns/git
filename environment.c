@@ -8,8 +8,10 @@
  * are.
  */
 #include "cache.h"
+#include "abspath.h"
 #include "branch.h"
 #include "environment.h"
+#include "gettext.h"
 #include "repository.h"
 #include "config.h"
 #include "refs.h"
@@ -17,9 +19,13 @@
 #include "commit.h"
 #include "strvec.h"
 #include "object-store.h"
+#include "replace-object.h"
 #include "tmp-objdir.h"
 #include "chdir-notify.h"
+#include "setup.h"
 #include "shallow.h"
+#include "wrapper.h"
+#include "write-or-die.h"
 
 int trust_executable_bit = 1;
 int trust_ctime = 1;
@@ -102,8 +108,6 @@ char *git_work_tree_cfg;
 
 static char *git_namespace;
 
-static char *super_prefix;
-
 /*
  * Repository-local GIT_* environment variables; see cache.h for details.
  */
@@ -121,7 +125,6 @@ const char * const local_repo_env[] = {
 	NO_REPLACE_OBJECTS_ENVIRONMENT,
 	GIT_REPLACE_REF_BASE_ENVIRONMENT,
 	GIT_PREFIX_ENVIRONMENT,
-	GIT_SUPER_PREFIX_ENVIRONMENT,
 	GIT_SHALLOW_FILE_ENVIRONMENT,
 	GIT_COMMON_DIR_ENVIRONMENT,
 	NULL
@@ -232,16 +235,6 @@ const char *strip_namespace(const char *namespaced_ref)
 	if (skip_prefix(namespaced_ref, get_git_namespace(), &out))
 		return out;
 	return NULL;
-}
-
-const char *get_super_prefix(void)
-{
-	static int initialized;
-	if (!initialized) {
-		super_prefix = xstrdup_or_null(getenv(GIT_SUPER_PREFIX_ENVIRONMENT));
-		initialized = 1;
-	}
-	return super_prefix;
 }
 
 static int git_work_tree_initialized;
